@@ -93,6 +93,7 @@ def health():
         "status": "ok",
         "zalo_configured": bool(ZALO_TOKEN),
         "gemini_configured": bool(GEMINI_API_KEY),
+        "webhook_registration": WEBHOOK_STATUS,
     })
 
 
@@ -124,32 +125,76 @@ def webhook():
         return jsonify({"status": "error", "message": "Bot processing failed"}), 500
 
 
+WEBHOOK_STATUS = "not_checked"
+
+
 def register_webhook() -> None:
-    """Register this Render service as the Zalo webhook when all settings exist."""
+    """Register and verify this Render service as the Zalo webhook."""
+    global WEBHOOK_STATUS
+
     base_url = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
-    if not (ZALO_TOKEN and WEBHOOK_SECRET and base_url):
-        logger.warning("Webhook auto-registration skipped: set ZALO_TOKEN, WEBHOOK_SECRET and Render URL.")
+    missing = [
+        name for name, value in (
+            ("ZALO_TOKEN", ZALO_TOKEN),
+            ("WEBHOOK_SECRET", WEBHOOK_SECRET),
+            ("RENDER_EXTERNAL_URL", base_url),
+        ) if not value
+    ]
+    if missing:
+        WEBHOOK_STATUS = "missing_config"
+        logger.warning(
+            "Webhook registration skipped; missing environment variables: %s",
+            ", ".join(missing),
+        )
         return
+
     if len(WEBHOOK_SECRET) < 8 or len(WEBHOOK_SECRET) > 256:
+        WEBHOOK_STATUS = "invalid_secret"
         logger.error("WEBHOOK_SECRET must contain 8 to 256 characters.")
         return
+
+    webhook_url = f"{base_url}/webhook"
     try:
         response = _http.post(
             f"{ZALO_API_BASE}/bot{ZALO_TOKEN}/setWebhook",
             json={
-                "url": f"{base_url}/webhook",
+                "url": webhook_url,
                 "secret_token": WEBHOOK_SECRET,
             },
             timeout=20,
         )
         response.raise_for_status()
         data = response.json()
-        if data.get("ok") is True:
-            logger.info("Zalo webhook registered: %s/webhook", base_url)
+
+        if not isinstance(data, dict) or data.get("ok") is not True:
+            WEBHOOK_STATUS = "registration_failed"
+            logger.error("Zalo rejected webhook registration: %s", data)
+            return
+
+        info_response = _http.post(
+            f"{ZALO_API_BASE}/bot{ZALO_TOKEN}/getWebhookInfo",
+            timeout=20,
+        )
+        info_response.raise_for_status()
+        info = info_response.json()
+        actual_url = (
+            (info.get("result") or {}).get("url")
+            if isinstance(info, dict) else None
+        )
+
+        if isinstance(info, dict) and info.get("ok") is True and actual_url == webhook_url:
+            WEBHOOK_STATUS = "registered"
+            logger.info("Zalo webhook registered and verified: %s", webhook_url)
         else:
-            logger.error("Zalo webhook registration failed: %s", data)
+            WEBHOOK_STATUS = "registered_unverified"
+            logger.warning(
+                "Zalo accepted setWebhook, but getWebhookInfo did not confirm the expected URL. "
+                "Returned status: %s",
+                info,
+            )
     except Exception:
-        logger.exception("Could not register Zalo webhook")
+        WEBHOOK_STATUS = "registration_error"
+        logger.exception("Could not register or verify Zalo webhook")
 
 
 register_webhook()
