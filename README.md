@@ -18,7 +18,7 @@ Bot Zalo trả lời tin nhắn bằng Google Gemini, chạy bằng Flask và c�
 3. Tạo các biến môi trường được yêu cầu:
    - `ZALO_TOKEN`: Bot Token mới từ Zalo.
    - `GEMINI_API_KEY`: API key mới từ Google AI Studio.
-   - `GEMINI_MODEL`: mặc định `gemini-2.5-flash`.
+   - `GEMINI_MODEL`: mặc định `gemini-3.8-flash`.
    - `WEBHOOK_SECRET`: tùy chọn; chỉ đặt nếu nền tảng webhook có thể gửi header `X-Webhook-Secret` tương ứng.
 4. Chờ Render deploy thành công. Mở URL dịch vụ, ví dụ `https://ten-dich-vu.onrender.com/health`.
 5. Kiểm tra JSON có `"status":"ok"`, `"zalo_configured":true` và `"gemini_configured":true`.
