@@ -2,10 +2,12 @@ import logging
 import os
 import time
 from typing import Any
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 from flask import Flask, jsonify, request
 from google import genai
+from google.genai import types
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("zalo-gemini-bot")
@@ -20,7 +22,11 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 ZALO_API_BASE = "https://bot-api.zaloplatforms.com"
 
 _http = requests.Session()
-_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+_gemini = (
+    genai.Client(api_key=GEMINI_API_KEY, http_options=types.HttpOptions(timeout=15000))
+    if GEMINI_API_KEY else None
+)
+_message_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="zalo-reply")
 
 
 def extract_message(payload: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
@@ -75,11 +81,12 @@ def ask_gemini(message: str) -> str:
     # Retry only transient capacity/rate-limit/server errors. Do not retry
     # authentication, invalid-request, or other permanent client errors.
     retryable_codes = {429, 500, 502, 503, 504}
-    for attempt in range(4):
+    for attempt in range(2):
         try:
             response = _gemini.models.generate_content(
                 model=GEMINI_MODEL,
-                contents=message[:12000],
+                contents=("Trả lời bằng tiếng Việt nếu người dùng dùng tiếng Việt. Trả lời ngắn gọn, trực tiếp.\n\n" + message[:6000]),
+                config=types.GenerateContentConfig(max_output_tokens=512),
             )
             answer = (response.text or "").strip()
             return answer or "Mình chưa tạo được câu trả lời. Bạn thử hỏi lại nhé."
@@ -99,14 +106,14 @@ def ask_gemini(message: str) -> str:
             )
             if not is_transient:
                 raise
-            if attempt == 3:
+            if attempt == 1:
                 raise GeminiTemporaryError(
-                    "Gemini remained unavailable after 4 attempts."
+                    "Gemini remained unavailable after 2 attempts."
                 ) from exc
 
-            delay = 2 ** attempt
+            delay = 0.5
             logger.warning(
-                "Gemini temporary error (attempt %s/4); retrying in %s seconds: %s",
+                "Gemini temporary error (attempt %s/2); retrying in %s seconds: %s",
                 attempt + 1, delay, type(exc).__name__,
             )
             time.sleep(delay)
@@ -177,25 +184,20 @@ def webhook():
         logger.info("Webhook event ignored: unsupported event_name=%s", event_name)
         return jsonify({"status": "ignored"}), 200
 
-    logger.info("Text message received; event_name=%s", event_name or "unspecified")
+    logger.info("Text message received; queueing background reply; event_name=%s",
+                event_name or "unspecified")
+    _message_pool.submit(process_message, chat_id, message_text)
+    return jsonify({"status": "accepted"}), 200
+
+
+def process_message(chat_id: str, message_text: str) -> None:
     try:
         answer = ask_gemini(message_text)
         logger.info("Gemini generated a reply")
         send_zalo_message(chat_id, answer)
         logger.info("Reply sent successfully to Zalo")
-        return jsonify({"status": "ok"}), 200
-    except GeminiTemporaryError:
-        logger.exception("Gemini unavailable after retries; no Zalo reply was sent")
-        return jsonify({
-            "status": "temporarily_unavailable",
-            "message": "Gemini is temporarily unavailable; retry this webhook later",
-        }), 503
-    except requests.RequestException:
-        logger.exception("Zalo API request failed")
-        return jsonify({"status": "error", "message": "Zalo API request failed"}), 502
     except Exception:
-        logger.exception("Webhook processing failed")
-        return jsonify({"status": "error", "message": "Bot processing failed"}), 500
+        logger.exception("Background message processing failed; chat_id=%s", chat_id)
 
 
 WEBHOOK_STATUS = "not_checked"
