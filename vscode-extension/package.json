@@ -1,0 +1,15 @@
+{
+  "name": "ducmanh-ai-connector",
+  "displayName": "DUCMANH AI Connector",
+  "description": "Connect VS Code to your DUCMANH AI assistant.",
+  "version": "0.1.0",
+  "publisher": "ducmanh",
+  "engines": {"vscode": "^1.85.0"},
+  "categories": ["Other"],
+  "activationEvents": ["onCommand:ducmanh.connect", "onCommand:ducmanh.ask"],
+  "main": "./extension.js",
+  "contributes": {"commands": [
+    {"command":"ducmanh.connect","title":"DUCMANH AI: Configure Connection"},
+    {"command":"ducmanh.ask","title":"DUCMANH AI: Ask About Workspace"}
+  ]}
+}
