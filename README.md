@@ -50,7 +50,6 @@ Mở URL gốc của dịch vụ để xem trạng thái. Sau đó nhắn tin ch
 - Tin nhắn dài được chia thành nhiều phần để phù hợp giới hạn gửi tin.
 - Không chia sẻ Bot Token hoặc Gemini API key cho người khác.
 
-
 ## DUCMANH AI foundation (new)
 
 - `GET /api/connections`: safe provider connection status; never returns credentials.
@@ -66,3 +65,6 @@ In Render → Environment, add `STUDIO_API_KEY` with a long random secret. Do no
 `{"format":"html","filename":"my-site","content":"<!doctype html>..."}`.
 
 Canva, OpenAI, Claude, DeepSeek, OpenRouter, GitHub, Render, Google Drive, Notion, Figma, and Dropbox require their own credentials/OAuth app setup. The catalog intentionally reports them as not connected until verified. No arbitrary generated code is executed by the web service.
+
+### Connection Center technical specification
+See [CONNECTION_CENTER_SPEC.md](CONNECTION_CENTER_SPEC.md) for the planned architecture, provider catalog, API contracts, authentication and credential security, VS Code pairing model, plugin marketplace, database design, and phased rollout. This is a design document; it does not mean those integrations are already connected.
