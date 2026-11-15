@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from typing import Any
 
 import requests
@@ -63,15 +64,54 @@ def extract_message(payload: dict[str, Any]) -> tuple[str | None, str | None, st
     return None, None, event_name
 
 
+class GeminiTemporaryError(RuntimeError):
+    """Gemini is temporarily unavailable after retrying."""
+
+
 def ask_gemini(message: str) -> str:
     if _gemini is None:
         raise RuntimeError("GEMINI_API_KEY chưa được cấu hình.")
-    response = _gemini.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=message[:12000],
-    )
-    answer = (response.text or "").strip()
-    return answer or "Mình chưa tạo được câu trả lời. Bạn thử hỏi lại nhé."
+
+    # Retry only transient capacity/rate-limit/server errors. Do not retry
+    # authentication, invalid-request, or other permanent client errors.
+    retryable_codes = {429, 500, 502, 503, 504}
+    for attempt in range(4):
+        try:
+            response = _gemini.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=message[:12000],
+            )
+            answer = (response.text or "").strip()
+            return answer or "Mình chưa tạo được câu trả lời. Bạn thử hỏi lại nhé."
+        except Exception as exc:
+            code = (
+                getattr(exc, "code", None)
+                or getattr(exc, "status_code", None)
+                or getattr(getattr(exc, "response", None), "status_code", None)
+            )
+            message_upper = str(exc).upper()
+            is_transient = (
+                code in retryable_codes
+                or any(token in message_upper for token in (
+                    "503", "UNAVAILABLE", "RESOURCE_EXHAUSTED",
+                    "429", "INTERNAL", "502", "504",
+                ))
+            )
+            if not is_transient:
+                raise
+            if attempt == 3:
+                raise GeminiTemporaryError(
+                    "Gemini remained unavailable after 4 attempts."
+                ) from exc
+
+            delay = 2 ** attempt
+            logger.warning(
+                "Gemini temporary error (attempt %s/4); retrying in %s seconds: %s",
+                attempt + 1, delay, type(exc).__name__,
+            )
+            time.sleep(delay)
+
+    raise GeminiTemporaryError("Gemini retry loop ended unexpectedly.")
 
 
 def send_zalo_message(chat_id: str, text: str) -> None:
@@ -144,6 +184,12 @@ def webhook():
         send_zalo_message(chat_id, answer)
         logger.info("Reply sent successfully to Zalo")
         return jsonify({"status": "ok"}), 200
+    except GeminiTemporaryError:
+        logger.exception("Gemini unavailable after retries; no Zalo reply was sent")
+        return jsonify({
+            "status": "temporarily_unavailable",
+            "message": "Gemini is temporarily unavailable; retry this webhook later",
+        }), 503
     except requests.RequestException:
         logger.exception("Zalo API request failed")
         return jsonify({"status": "error", "message": "Zalo API request failed"}), 502
