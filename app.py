@@ -14,7 +14,7 @@ app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
 
 ZALO_TOKEN = os.getenv("ZALO_TOKEN", "").strip()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 ZALO_API_BASE = "https://bot-api.zaloplatforms.com"
 
