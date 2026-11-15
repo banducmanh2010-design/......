@@ -1,13 +1,17 @@
 import logging
+import hmac
+from io import BytesIO
 import os
 import time
 from typing import Any
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_file
 from google import genai
 from google.genai import types
+from connections import connection_status
+from studio import generate_file
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("zalo-gemini-bot")
@@ -19,6 +23,7 @@ ZALO_TOKEN = os.getenv("ZALO_TOKEN", "").strip()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
+STUDIO_API_KEY = os.getenv("STUDIO_API_KEY", "").strip()
 ZALO_API_BASE = "https://bot-api.zaloplatforms.com"
 
 _http = requests.Session()
@@ -136,6 +141,51 @@ def send_zalo_message(chat_id: str, text: str) -> None:
         data = response.json()
         if isinstance(data, dict) and data.get("ok") is False:
             raise RuntimeError(data.get("description", "Zalo API trả về lỗi."))
+
+
+@app.get("/api/connections")
+def api_connections():
+    return jsonify({"providers": connection_status()})
+
+
+@app.get("/api/plugins")
+def api_plugins():
+    return jsonify({"plugins": [
+        {"id":"file_studio","name":"File Studio","status":"available","formats":["html","txt","md","pdf","docx","pptx","xlsx","zip"]},
+        {"id":"codex","name":"CODEX","status":"planned_integration"},
+        {"id":"canva","name":"Canva Connect","status":"requires_oauth_setup"},
+        {"id":"vscode","name":"VS Code Connector","status":"extension_scaffold"},
+        {"id":"image_studio","name":"Image Studio","status":"requires_image_provider"},
+        {"id":"web_search","name":"Web Search","status":"requires_search_provider"},
+        {"id":"github","name":"GitHub","status":"requires_token"},
+        {"id":"render","name":"Render","status":"requires_api_key"}
+    ]})
+
+
+@app.post("/api/files/generate")
+def api_generate_file():
+    # Keep file-generation endpoints private; configure STUDIO_API_KEY in Render.
+    if not STUDIO_API_KEY:
+        return jsonify({"error":"File Studio chưa được mở. Hãy cấu hình STUDIO_API_KEY trên Render."}), 503
+    supplied = request.headers.get("X-Studio-Key", "")
+    if not hmac.compare_digest(supplied, STUDIO_API_KEY):
+        return jsonify({"error":"unauthorized"}), 401
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"error":"invalid JSON"}), 400
+    try:
+        filename, data, mime = generate_file(
+            str(body.get("format", "")),
+            str(body.get("filename", "ducmanh-ai")),
+            str(body.get("content", "")),
+        )
+        logger.info("File generated: %s (%s bytes)", filename, len(data))
+        return send_file(BytesIO(data), mimetype=mime, as_attachment=True, download_name=filename)
+    except ValueError as exc:
+        return jsonify({"error":str(exc)}), 400
+    except Exception:
+        logger.exception("File generation failed")
+        return jsonify({"error":"file_generation_failed"}), 500
 
 
 @app.get("/")
