@@ -99,7 +99,7 @@ def health():
 @app.post("/webhook")
 def webhook():
     if WEBHOOK_SECRET:
-        supplied = request.headers.get("X-Webhook-Secret", "")
+        supplied = request.headers.get("X-Bot-Api-Secret-Token", "")
         if supplied != WEBHOOK_SECRET:
             return jsonify({"error": "unauthorized"}), 401
 
@@ -122,6 +122,37 @@ def webhook():
     except Exception:
         logger.exception("Webhook processing failed")
         return jsonify({"status": "error", "message": "Bot processing failed"}), 500
+
+
+def register_webhook() -> None:
+    """Register this Render service as the Zalo webhook when all settings exist."""
+    base_url = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
+    if not (ZALO_TOKEN and WEBHOOK_SECRET and base_url):
+        logger.warning("Webhook auto-registration skipped: set ZALO_TOKEN, WEBHOOK_SECRET and Render URL.")
+        return
+    if len(WEBHOOK_SECRET) < 8 or len(WEBHOOK_SECRET) > 256:
+        logger.error("WEBHOOK_SECRET must contain 8 to 256 characters.")
+        return
+    try:
+        response = _http.post(
+            f"{ZALO_API_BASE}/bot{ZALO_TOKEN}/setWebhook",
+            json={
+                "url": f"{base_url}/webhook",
+                "secret_token": WEBHOOK_SECRET,
+            },
+            timeout=20,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if data.get("ok") is True:
+            logger.info("Zalo webhook registered: %s/webhook", base_url)
+        else:
+            logger.error("Zalo webhook registration failed: %s", data)
+    except Exception:
+        logger.exception("Could not register Zalo webhook")
+
+
+register_webhook()
 
 
 if __name__ == "__main__":
