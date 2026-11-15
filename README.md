@@ -49,3 +49,20 @@ Mở URL gốc của dịch vụ để xem trạng thái. Sau đó nhắn tin ch
 - Các loại sự kiện khác được xác nhận và bỏ qua.
 - Tin nhắn dài được chia thành nhiều phần để phù hợp giới hạn gửi tin.
 - Không chia sẻ Bot Token hoặc Gemini API key cho người khác.
+
+
+## DUCMANH AI foundation (new)
+
+- `GET /api/connections`: safe provider connection status; never returns credentials.
+- `GET /api/plugins`: plugin availability/catalog.
+- `POST /api/files/generate`: exports supplied content to HTML, TXT, Markdown, PDF, DOCX, PPTX, XLSX, or ZIP. Requires `X-Studio-Key` matching the Render `STUDIO_API_KEY` secret.
+- `studio.py`: document export helpers.
+- `connections.py`: provider registry (a provider is not considered connected until credentials/authorization are configured).
+- `PLUGIN_CATALOG.md`: integration and security plan.
+- `vscode-extension/`: initial VS Code companion extension scaffold; it does not yet send workspace data to the server.
+
+### Enable File Studio
+In Render → Environment, add `STUDIO_API_KEY` with a long random secret. Do not put it in GitHub or send it in Zalo messages. Then call `POST /api/files/generate` with header `X-Studio-Key` and JSON body such as:
+`{"format":"html","filename":"my-site","content":"<!doctype html>..."}`.
+
+Canva, OpenAI, Claude, DeepSeek, OpenRouter, GitHub, Render, Google Drive, Notion, Figma, and Dropbox require their own credentials/OAuth app setup. The catalog intentionally reports them as not connected until verified. No arbitrary generated code is executed by the web service.
