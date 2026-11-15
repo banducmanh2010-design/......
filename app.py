@@ -22,30 +22,45 @@ _http = requests.Session()
 _gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 
-def extract_message(payload: dict[str, Any]) -> tuple[str | None, str | None]:
-    """Read common Zalo Bot update shapes without assuming every event is a message."""
-    candidates = [
-        payload.get("message"),
-        payload.get("msg"),
-        (payload.get("update") or {}).get("message")
-        if isinstance(payload.get("update"), dict) else None,
-        payload,
-    ]
+def extract_message(payload: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
+    """Extract a text message from flat or result-wrapped Zalo Bot updates."""
+    candidates: list[dict[str, Any]] = []
+    current: Any = payload
 
-    for item in candidates:
-        if not isinstance(item, dict):
-            continue
-        text = item.get("text")
-        chat = item.get("chat")
-        sender = item.get("from") or item.get("sender")
-        chat_id = (
-            (chat.get("id") if isinstance(chat, dict) else None)
-            or item.get("chat_id")
-            or (sender.get("id") if isinstance(sender, dict) else None)
-        )
-        if isinstance(text, str) and text.strip() and chat_id is not None:
-            return str(chat_id), text.strip()
-    return None, None
+    # Zalo Bot updates may be flat or wrapped as {"ok": true, "result": {...}}.
+    for _ in range(3):
+        if not isinstance(current, dict):
+            break
+        candidates.append(current)
+        nested = current.get("result") or current.get("update")
+        if not isinstance(nested, dict) or nested is current:
+            break
+        current = nested
+
+    event_name = next(
+        (item.get("event_name") for item in candidates
+         if isinstance(item.get("event_name"), str)),
+        None,
+    )
+
+    for container in candidates:
+        for item in (container.get("message"), container.get("msg"), container):
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text")
+            chat = item.get("chat")
+            sender = item.get("from") or item.get("sender")
+            recipient = item.get("recipient")
+            chat_id = (
+                (chat.get("id") if isinstance(chat, dict) else None)
+                or item.get("chat_id")
+                or (sender.get("id") if isinstance(sender, dict) else None)
+                or (recipient.get("id") if isinstance(recipient, dict) else None)
+            )
+            if isinstance(text, str) and text.strip() and chat_id is not None:
+                return str(chat_id), text.strip(), event_name
+
+    return None, None, event_name
 
 
 def ask_gemini(message: str) -> str:
@@ -63,7 +78,6 @@ def send_zalo_message(chat_id: str, text: str) -> None:
     if not ZALO_TOKEN:
         raise RuntimeError("ZALO_TOKEN chưa được cấu hình.")
     url = f"{ZALO_API_BASE}/bot{ZALO_TOKEN}/sendMessage"
-    # Zalo Bot API giới hạn nội dung tin nhắn văn bản tối đa 2.000 ký tự.
     for start in range(0, len(text), 1900):
         part = text[start:start + 1900]
         response = _http.post(
@@ -102,20 +116,33 @@ def webhook():
     if WEBHOOK_SECRET:
         supplied = request.headers.get("X-Bot-Api-Secret-Token", "")
         if supplied != WEBHOOK_SECRET:
+            logger.warning("Rejected webhook request: secret header mismatch")
             return jsonify({"error": "unauthorized"}), 401
 
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
+        logger.warning("Ignored webhook request: body was not a JSON object")
         return jsonify({"error": "invalid JSON"}), 400
 
-    chat_id, message_text = extract_message(payload)
+    chat_id, message_text, event_name = extract_message(payload)
     if not chat_id or not message_text:
-        # Acknowledge non-message events so the provider does not retry them.
+        logger.info(
+            "Webhook event ignored: event_name=%s top_level_keys=%s",
+            event_name or "unknown",
+            sorted(payload.keys()),
+        )
         return jsonify({"status": "ignored"}), 200
 
+    if event_name and event_name not in ("message.text.received", "user_send_text"):
+        logger.info("Webhook event ignored: unsupported event_name=%s", event_name)
+        return jsonify({"status": "ignored"}), 200
+
+    logger.info("Text message received; event_name=%s", event_name or "unspecified")
     try:
         answer = ask_gemini(message_text)
+        logger.info("Gemini generated a reply")
         send_zalo_message(chat_id, answer)
+        logger.info("Reply sent successfully to Zalo")
         return jsonify({"status": "ok"}), 200
     except requests.RequestException:
         logger.exception("Zalo API request failed")
@@ -157,10 +184,7 @@ def register_webhook() -> None:
     try:
         response = _http.post(
             f"{ZALO_API_BASE}/bot{ZALO_TOKEN}/setWebhook",
-            json={
-                "url": webhook_url,
-                "secret_token": WEBHOOK_SECRET,
-            },
+            json={"url": webhook_url, "secret_token": WEBHOOK_SECRET},
             timeout=20,
         )
         response.raise_for_status()
@@ -168,7 +192,7 @@ def register_webhook() -> None:
 
         if not isinstance(data, dict) or data.get("ok") is not True:
             WEBHOOK_STATUS = "registration_failed"
-            logger.error("Zalo rejected webhook registration: %s", data)
+            logger.error("Zalo rejected webhook registration (response omitted)")
             return
 
         info_response = _http.post(
@@ -187,11 +211,7 @@ def register_webhook() -> None:
             logger.info("Zalo webhook registered and verified: %s", webhook_url)
         else:
             WEBHOOK_STATUS = "registered_unverified"
-            logger.warning(
-                "Zalo accepted setWebhook, but getWebhookInfo did not confirm the expected URL. "
-                "Returned status: %s",
-                info,
-            )
+            logger.warning("Zalo webhook registration could not be verified")
     except Exception:
         WEBHOOK_STATUS = "registration_error"
         logger.exception("Could not register or verify Zalo webhook")
